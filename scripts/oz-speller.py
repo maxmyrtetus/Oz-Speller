@@ -372,29 +372,31 @@ if use_dsi_lsl:
         >>>     inlet.close_stream()
         >>> print(save_variable)
         """
-        streams = []
-        inlets = []
-        streams = resolve_streams()
+        
+        streams = [] # streams holds information about lsl streams
+        inlets = [] # inlets stores objects that allow script to receive data from these streams
+        streams = resolve_streams() # discovers available LSL streams on network and makes list out of them
         for stream in streams:
-            inlets.append(StreamInlet(stream))
+            inlets.append(StreamInlet(stream)) # StreamInLet allows script to recieve data from LSL stream
         if inlets == None or len(inlets) == 0:
             raise Exception("Error: no stream found.")
 
-        def save_sample(inlets, save_variable):
+        def save_sample(inlets, save_variable): # data from inlets are saved onto save_variable
             global record_start_time
             while True:
                 row_data = [0]
                 inlet_idx = 0
-                while inlet_idx < len(inlets):  # iterate through the inlets
+                while inlet_idx < len(inlets):  # iterate through the inlets each once
+                    # pull_sample extracts info from inlet. sample holds data, timestamp holds time.
                     sample, timestamp = inlets[inlet_idx].pull_sample()
-                    if record_start_time:
+                    if record_start_time: # set to True
                         with open("meta.csv", 'w') as csv_file:
-                            csv_file.write('0,0,' + str(local_clock()) + '\n')
-                        record_start_time = False
-                    if (sample, timestamp) != (None, None):
-                        if inlet_idx is (len(inlets) - 1):
-                            row_data[0] = timestamp
-                        row_data.extend(sample)
+                            csv_file.write('0,0,' + str(local_clock()) + '\n') # gives start time
+                        record_start_time = False # after sets it to false to stop doing it
+                    if (sample, timestamp) != (None, None): # if its not empty (data is available)
+                        if inlet_idx is (len(inlets) - 1): # last inlet
+                            row_data[0] = timestamp # last inlet is used to update the first element of row data (time)
+                        row_data.extend(sample) # aggregates sample into list called row_data
                         inlet_idx += 1  # move on to next inlet
                     else:
                         time.sleep(0.0001)  # wait for 0.1 ms if the data is not there yet
@@ -431,30 +433,32 @@ if use_dsi_lsl:
 # █████████████████████████████████████████████████████████████████████████████
 
 ## DSI-7
-if use_dsi7:
+if use_dsi7: # ctypes: deals with C fcs used for handling eeg data streams
+             # serial: for serial communication with dsi-7
     import dsi, ctypes, multiprocessing, threading, serial
 
+    # callback function for when new eeg data is available, creates a loop?
     SampleCallback = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_double, ctypes.c_void_p)
 
 
-    @SampleCallback
+    @SampleCallback # maybe a loop?
     def ExampleSampleCallback_Signals(headsetPtr, packetTime, userData):
         global run_count
         global data
         global first_call
-        h = dsi.Headset(headsetPtr)
-        sample_data = [packetTime]  # time stamp
+        h = dsi.Headset(headsetPtr) #initializes instance of headset from dsi module
+        sample_data = [packetTime]  # time stamp of current eeg data
         sample_data.extend([ch.ReadBuffered() for ch in h.Channels()])  # channel voltages
-        data.append(sample_data)
+        data.append(sample_data) # adds time stamp to data reading
         run_count += 1
-        if first_call:
+        if first_call: # first time the 
             if sample_data[1] > 1e15:  # if Pz saturation error happens
                 quit()
             with open("meta.csv", 'w') as csv_file:
                 # csv_file.write(str(time.time()) + '\n')
-                csv_file.write('0,0,' + str(local_clock()) + '\n')
+                csv_file.write('0,0,' + str(local_clock()) + '\n') # on first call time is given in meta.csv
             first_call = False
-        if run_count >= 300:  # save data every second
+        if run_count >= 300:  # save data every second maybe because sampling rate is 300hz
             run_count = 0
             data_np = np.array(data)
             with open("eeg.csv", 'a') as csv_file:
@@ -464,36 +468,47 @@ if use_dsi7:
 
     def record():
         args = getattr(sys, 'argv', [''])
+
+        # checks if script is on windows?
         if sys.platform.lower().startswith('win'):
             default_port = 'COM8'  # COM4, COM8, COM9
-        else:
+        else: # uses bluetooth 
             default_port = '/dev/cu.DSI7-0009.BluetoothSeri'
         # first command-line argument: serial port address
-        if len(args) > 1:
+        if len(args) > 1: # if user gives another port then use that port?
             port = args[1]
         else:
             port = default_port
         # second command-line argument:  name of the Source to be used as reference, or the word 'impedances'
-        if len(args) > 2:
+        if len(args) > 2: # args[0] is typically script's name so if args>2 then that means reference electrode?
             ref = args[2]
         else:
             ref = ''
         headset = dsi.Headset()
         headset.Connect(port)
-        headset.SetSampleCallback(ExampleSampleCallback_Signals, 0)
-        headset.StartDataAcquisition()
+        headset.SetSampleCallback(ExampleSampleCallback_Signals, 0) # gives headset example signals 
+        headset.StartDataAcquisition() # starts data acquisition process
+
+        # open eeg.csv
         with open("eeg.csv", 'w') as csv_file:
+        # writes header row for csv file with time and name of all of eeg channels.
             csv_file.write('time, ' + ', '.join([ch.GetName() for ch in headset.Channels()]) + '\n')
         while True:
+            # no clue but maybe tells data acquisition to wait before continuing but confused why its infinite
             headset.Idle(2.0)
 
-
+    # checks if script is being executed as main program. ensures block of code only runs when its run directly e.g. cmd
     if __name__ == "__main__":
         # recording = multiprocessing.Process(target=record,daemon=True)
-        recording = threading.Thread(target=record, daemon=True)
+
+        # recording executed by the daemon thread. daemon (automatically terminates when main program exits)
+        # desireable for background tasks that shouldn't prevent the program from closing
+        # threads good for Io because they are lightweight and share same memory space
+        recording = threading.Thread(target=record, daemon=True) 
         recording.start()
-        if use_dsi_trigger:
-            dsi_serial = serial.Serial('COM2', 115200)
+
+        if use_dsi_trigger:# is the big box for input output
+            dsi_serial = serial.Serial('COM2', 115200) #has such port and serial speed
         time.sleep(10)
 
 # █████████████████████████████████████████████████████████████████████████████
@@ -505,223 +520,16 @@ if use_arduino:
     from subprocess import Popen
 
     # Popen([executable,  os.path.join(os.getcwd(), 'run_arduino_photosensor.py')])
+
+    # executable refers to python interpreter executing script
+    # constructs full path to photosensor.py
+    # popen creates new process that runs photosensor.py script
     Popen([executable, os.path.join(os.getcwd(), 'scripts', 'run_arduino_photosensor.py')])
     time.sleep(2)
 
 # █████████████████████████████████████████████████████████████████████████████
 
 ## OpenBCI Cyton
-if use_cyton:
-    import glob
-    from brainflow.board_shim import BoardShim, BrainFlowInputParams
-    from pylsl import StreamInfo, StreamOutlet, StreamInlet, resolve_stream, local_clock
-    from serial import Serial
-    from threading import Thread, Event
-
-    CYTON_BOARD_ID = 0
-    BAUD_RATE = 115200
-    ANALOGUE_MODE = '/2'  # Reads from analog pins A5(D11), A6(D12) and if no
-
-
-    # wifi shield is present, then A7(D13) as well.
-
-    def find_openbci_port():
-        """Finds the port to which the Cyton Dongle is connected to."""
-        # Find serial port names per OS
-        if sys.platform.startswith('win'):
-            ports = ['COM%s' % (i + 1) for i in range(256)]
-        elif sys.platform.startswith('linux') or sys.platform.startswith('cygwin'):
-            ports = glob.glob('/dev/ttyUSB*')
-        elif sys.platform.startswith('darwin'):
-            ports = glob.glob('/dev/cu.usbserial*')
-        else:
-            raise EnvironmentError('Error finding ports on your operating system')
-
-        openbci_port = ''
-        for port in ports:
-            try:
-                s = Serial(port=port, baudrate=BAUD_RATE, timeout=None)
-                s.write(b'v')
-                line = ''
-                time.sleep(2)
-                if s.inWaiting():
-                    line = ''
-                    c = ''
-                    while '$$$' not in line:
-                        c = s.read().decode('utf-8', errors='replace')
-                        line += c
-                    if 'OpenBCI' in line:
-                        openbci_port = port
-                s.close()
-            except (OSError, serial.SerialException):
-                pass
-        if openbci_port == '':
-            raise OSError('Cannot find OpenBCI port.')
-        else:
-            return openbci_port
-
-
-    def start_cyton_lsl():
-        """ 'start streaming cyton to lsl'
-        Stream EEG and analogue(AUX) data from Cyton onto the Lab Streaming 
-        Layer(LSL).
-        (LSL is commonly used in EEG labs for different devices to push and pull
-        data from a shared network layer to ensure good synchronization and timing
-        across all devices)
-
-        Returns
-        -------
-        board : board instance for the amplifier board, in this case OpenBCI Cyton
-        push_thread : the thread instance that pushes data onto the LSL constantly
-
-        Note
-        ----
-        To properly end the push_thread, call board.stop_stream(). If this isn't done,
-        the program could freeze or show error messages. Do not lose the board instance
-
-        Examples
-        --------
-        >>> board, _ = start_lsl() # to start pushing onto lsl
-        ...
-        >>> board.stop_streaming() # to stop pushing onto lsl
-        """
-        # print("Creating LSL stream for EEG. \nName: OpenBCIEEG\nID: OpenBCItestEEG\n")
-        info_eeg = StreamInfo('OpenBCIEEG', 'EEG', 8, 250, 'float32', 'OpenBCItestEEG')
-        # print("Creating LSL stream for AUX. \nName: OpenBCIAUX\nID: OpenBCItestEEG\n")
-        info_aux = StreamInfo('OpenBCIAUX', 'AUX', 3, 250, 'float32', 'OpenBCItestAUX')
-
-        outlet_eeg = StreamOutlet(info_eeg)
-        outlet_aux = StreamOutlet(info_aux)
-
-        params = BrainFlowInputParams()
-        params.serial_port = find_openbci_port()
-        board = BoardShim(CYTON_BOARD_ID, params)
-        board.prepare_session()
-        res_query = board.config_board('/0')
-        print(res_query)
-        res_query = board.config_board('//')
-        print(res_query)
-        res_query = board.config_board(ANALOGUE_MODE)
-        print(res_query)
-        board.start_stream(45000)
-        time.sleep(1)
-        stop_event = Event()
-
-        def push_sample():
-            start_time = local_clock()
-            sent_eeg = 0
-            sent_aux = 0
-            while not stop_event.is_set():
-                elapsed_time = local_clock() - start_time
-                data_from_board = board.get_board_data()
-
-                required_eeg_samples = int(250 * elapsed_time) - sent_eeg
-                eeg_data = data_from_board[board.get_eeg_channels(CYTON_BOARD_ID)]
-                datachunk = []
-                for i in range(len(eeg_data[0])):
-                    datachunk.append(eeg_data[:, i].tolist())
-                stamp = local_clock()
-                outlet_eeg.push_chunk(datachunk, stamp)
-                sent_eeg += required_eeg_samples
-
-                required_aux_samples = int(250 * elapsed_time) - sent_aux
-                aux_data = data_from_board[board.get_analog_channels(CYTON_BOARD_ID)]
-                datachunk = []
-                for i in range(len(aux_data[0])):
-                    datachunk.append(aux_data[:, i].tolist())
-                stamp = local_clock()
-                outlet_aux.push_chunk(datachunk, stamp)
-                sent_aux += required_aux_samples
-
-                time.sleep(0.02)  # 20 ms
-
-        push_thread = Thread(target=push_sample)
-        push_thread.start()
-        return board, stop_event
-
-
-    def get_lsl_data(save_variable, types=['EEG', 'AUX']):
-        """ 'get data from lsl'  and save them onto 'save_variable'
-        Continuously collect specified channels data from the Lab Streaming Layer(LSL),
-        not necessarily just the EEG.
-        (LSL is commonly used in EEG labs for different devices to push and pull
-        data from a shared network layer to ensure good synchronization and timing
-        across all devices)
-
-        Parameters
-        ----------
-        save_variable : empty list --> [timepoints by channels]
-                                        where channels = 
-                                        [timestamp, types[0]*num_channels_of_type[0] ...]
-            the variable to save the data onto
-        types: len(types) list of str
-            specifies the source types of the streams you want to get data from
-        
-
-        Returns
-        -------
-        inlets : some length list of pylsl.StreamInlet objects
-        pull_thread : the thread instance that pulls data from the LSL constantly
-
-        Note
-        ----
-        To properly end the pull_thread, call all inlet.close_stream() right before
-        you call board.stop_stream() If this isn't done, the program could freeze or 
-        show error messages. Do not lose the inlets list
-
-        Examples
-        --------
-        >>> save_variable = []
-        >>> inlets, _ = get_eeg_lsl(save_variable) # to start pulling data from lsl
-        ...
-        >>> for inlet in inlets:\
-        >>>     inlet.close_stream()
-        >>> print(save_variable)
-        """
-        streams = []
-        inlets = []
-        for stream_type in types:
-            streams.extend(resolve_stream('type', stream_type))
-        for stream in streams:
-            inlets.append(StreamInlet(stream))
-        if inlets == None or len(inlets) == 0:
-            raise Exception("Error: no stream found.")
-
-        def save_sample(inlets, save_variable):
-            global record_start_time
-            while True:
-                row_data = [0]
-                inlet_idx = 0
-                while inlet_idx < len(inlets):  # iterate through the inlets
-                    sample, timestamp = inlets[inlet_idx].pull_sample()
-                    if record_start_time:
-                        with open("meta.csv", 'w') as csv_file:
-                            csv_file.write('0,0,' + str(local_clock()) + '\n')
-                        record_start_time = False
-                    if (sample, timestamp) != (None, None):
-                        if inlet_idx is (len(inlets) - 1):
-                            row_data[0] = timestamp
-                        row_data.extend(sample)
-                        inlet_idx += 1  # move on to next inlet
-                    else:
-                        time.sleep(0.0001)  # wait for 0.1 ms if the data is not there yet
-                        # just to save some processing power
-                save_variable.append(row_data)
-
-        pull_thread = Thread(target=save_sample, args=(inlets, save_variable))
-        pull_thread.daemon = True
-        pull_thread.start()
-        return inlets, pull_thread
-
-
-    with open("eeg.csv", 'w') as csv_file:
-        csv_file.write('time, N1P, N2P, N3P, N4P, N5P, N6P, N7P, N8P, D11, D12, D13\n')
-    with open("meta.csv", 'w') as csv_file:
-        csv_file.write('')
-    eeg = []  # receive_data() saves [timepoints by channels] here
-    # where channels are length 12 [timestamp, 8 EEG Channels, 3 AUX channels]
-    board, stop_cyton = start_cyton_lsl()
-    inlets, _ = get_lsl_data(eeg)
 
 # █████████████████████████████████████████████████████████████████████████████
 
@@ -904,13 +712,6 @@ if __name__ == "__main__":
                         os.kill(p.pid, sig.CTRL_C_EVENT)
                         with open("eeg.csv", 'a') as csv_file:
                             np.savetxt(csv_file, eeg, delimiter=',')
-                    if use_cyton:
-                        for inlet in inlets:
-                            inlet.close_stream()
-                        stop_cyton.set()
-                        board.stop_stream()
-                        with open("eeg.csv", 'a') as csv_file:
-                            np.savetxt(csv_file, eeg, delimiter=',')
                     core.quit()
             trial_text = visual.TextStim(win, str(i_trial + 1) + '/' + str(len(sequence)), color=(-1, -1, -1),
                                          colorSpace='rgb')
@@ -1041,13 +842,6 @@ if __name__ == "__main__":
                             inlet.close_stream()
                         print(eeg)
                         os.kill(p.pid, sig.CTRL_C_EVENT)
-                        with open("eeg.csv", 'a') as csv_file:
-                            np.savetxt(csv_file, eeg, delimiter=',')
-                    if use_cyton:
-                        for inlet in inlets:
-                            inlet.close_stream()
-                        stop_cyton.set()
-                        board.stop_stream()
                         with open("eeg.csv", 'a') as csv_file:
                             np.savetxt(csv_file, eeg, delimiter=',')
                     core.quit()
@@ -1211,13 +1005,6 @@ if __name__ == "__main__":
                         for inlet in inlets:
                             inlet.close_stream()
                         os.kill(p.pid, sig.CTRL_C_EVENT)
-                        with open("eeg.csv", 'a') as csv_file:
-                            np.savetxt(csv_file, eeg, delimiter=',')
-                    if use_cyton:
-                        for inlet in inlets:
-                            inlet.close_stream()
-                        stop_cyton.set()
-                        board.stop_stream()
                         with open("eeg.csv", 'a') as csv_file:
                             np.savetxt(csv_file, eeg, delimiter=',')
                     core.quit()
@@ -1474,13 +1261,6 @@ if __name__ == "__main__":
                             os.kill(p.pid, sig.CTRL_C_EVENT)
                             with open("eeg.csv", 'a') as csv_file:
                                 np.savetxt(csv_file, eeg, delimiter=',')
-                        if use_cyton:
-                            for inlet in inlets:
-                                inlet.close_stream()
-                            stop_cyton.set()
-                            board.stop_stream()
-                            with open("eeg.csv", 'a') as csv_file:
-                                np.savetxt(csv_file, eeg, delimiter=',')
                         core.quit()
                 key_colors = np.array([[-1, -1, -1]] * (n_keyboard_classes + 1))
                 # flickering_keyboard.colors = key_colors
@@ -1662,13 +1442,6 @@ if __name__ == "__main__":
                                     os.kill(p.pid, sig.CTRL_C_EVENT)
                                     with open("eeg.csv", 'a') as csv_file:
                                         np.savetxt(csv_file, eeg, delimiter=',')
-                                if use_cyton:
-                                    for inlet in inlets:
-                                        inlet.close_stream()
-                                    stop_cyton.set()
-                                    board.stop_stream()
-                                    with open("eeg.csv", 'a') as csv_file:
-                                        np.savetxt(csv_file, eeg, delimiter=',')
                                 core.quit()
                         time_left = timer.getTime()
                         timeout_text.text = 'Timeout: ' + str(round(time_left, 3))
@@ -1685,9 +1458,6 @@ if __name__ == "__main__":
         for inlet in inlets:
             inlet.close_stream()
         os.kill(p.pid, sig.CTRL_C_EVENT)
-        with open("eeg.csv", 'a') as csv_file:
-            np.savetxt(csv_file, eeg, delimiter=',')
-    if use_cyton:
         with open("eeg.csv", 'a') as csv_file:
             np.savetxt(csv_file, eeg, delimiter=',')
     core.quit()
